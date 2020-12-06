@@ -30,11 +30,6 @@ if __name__ == '__main__':
 
     f = motpe.CnnFromCfg("nas-motpe", seed)
     cs = f.make_cs(CS.ConfigurationSpace(seed=seed))
-    # for hp in cs.get_hyperparameters():
-    #     print(hp)
-    #     import pdb
-    #     pdb.set_trace()
-    # raise NotImplementedError
     problem = motpe.Problem(f, cs)
     solver = motpe.MOTPE(seed=seed)
 
@@ -57,6 +52,4 @@ if __name__ == '__main__':
         plt.show()
     else:
         print(history)
-    import pdb
-    pdb.set_trace()
     history.to_json("./models/records_history.json")

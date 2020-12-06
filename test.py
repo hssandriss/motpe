@@ -1,7 +1,5 @@
-from pdb import set_trace
 from numpy.lib.npyio import load
 from pandas.io.json import json_normalize
-import pdb
 import json
 import ConfigSpace as CS
 import motpe
@@ -40,5 +38,3 @@ plt.ylabel('f2')
 plt.grid()
 plt.show()
 filtered.to_json("./models/records_history_top_tuned.json")
-
-pdb.set_trace()

@@ -777,8 +777,6 @@ class MOTPE:
         top_ratio = int(np.floor(len(problem.memory)*(20/30)))
         problem.memory.sort(key=lambda x: x['f']['f1'], reverse=True)  # Sort according to acc
         for record in problem.memory[:top_ratio]:
-            # import pdb
-            # pdb.set_trace()
             r = problem(record['x'], budget=30, save=True, load=True, trial=str(record['Trial']))
             new_record = {'Trial': record['Trial'], 'x': record['x'], 'f': r, 'budget': 50}
             self._history.append(new_record)
