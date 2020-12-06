@@ -1,19 +1,34 @@
+from sys import path
 import ConfigSpace as CS
 import ConfigSpace.hyperparameters as CSH
 import numpy as np
+from numpy.distutils.misc_util import Configuration
+from numpy.lib.npyio import load, save
 import optproblems.wfg
 import pandas as pd
 import pyDOE2
 from pygmo import hypervolume
 import scipy.special
 import sys
-
+import torch
+import torchvision.transforms as transforms
+from torch.utils.data import DataLoader, Subset
+from torchsummary import summary
+from torchvision.datasets import ImageFolder
+import logging
+from cnn import torchModel
+from sklearn.model_selection import StratifiedKFold
+import ConfigSpace as CS
+import ConfigSpace.hyperparameters as CSH
+from ConfigSpace.hyperparameters import CategoricalHyperparameter, UniformFloatHyperparameter, UniformIntegerHyperparameter, Constant
+import os
 
 eps = sys.float_info.epsilon
 
 ###############################################################################
 # benchmark
 ###############################################################################
+
 
 class Problem:
     def __init__(self,
@@ -26,9 +41,11 @@ class Problem:
         self.n_objectives = n_objectives
         self.n_variables = len(configspace.get_hyperparameters())
         self.configspace = configspace
+        # Memory
+        self.memory = []
 
-    def __call__(self, x):
-        return self.objective(x)
+    def __call__(self, x, budget=20, load=False, save=False, trial=None):
+        return self.objective(x, budget, load, save, trial)
 
     def num_objectives(self):
         return self.objective.num_objectives()
@@ -53,6 +70,158 @@ def create_hyperparameter(hp_type,
             name=name, default_value=default_value, choices=choices)
     else:
         raise ValueError('The hp_type must be chosen from [int, float, cat]')
+
+
+def get_optimizer_and_crit(cfg):
+    if 'optimizer' in cfg:
+        if cfg['optimizer'] == 'AdamW':
+            model_optimizer = torch.optim.AdamW
+        else:
+            model_optimizer = torch.optim.Adam
+    else:
+        model_optimizer = torch.optim.Adam
+
+    if 'train_criterion' in cfg:
+        if cfg['train_criterion'] == 'mse':
+            train_criterion = torch.nn.MSELoss
+        else:
+            train_criterion = torch.nn.CrossEntropyLoss
+    else:
+        train_criterion = torch.nn.CrossEntropyLoss
+    return model_optimizer, train_criterion
+
+
+class CnnFromCfg:
+    def __init__(self, name: str, seed: int) -> None:
+        self.name = name
+        self.seed = seed
+
+    def __call__(self, cfg: dict, budget: int, load: bool, save: bool, trial=str):
+        """
+       Creates an instance of the torch_model and fits the given data on it.
+       This is the function-call we try to optimize. Chosen values are stored in
+       the configuration (cfg).
+
+       Parameters
+       ----------
+       cfg: Configuration (basically a dictionary)
+           configuration chosen by smac
+       seed: int or RandomState
+           used to initialize the rf's random generator
+
+       Returns (f0: 1- acc,f1: log10(n_params))
+       -------
+        """
+        print(cfg)
+        lr = cfg['learning_rate_init'] if cfg['learning_rate_init'] else 0.001
+        # batch_size = cfg['batch_size'] if cfg['batch_size'] else 200
+        # Device configuration
+        device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        img_width = 16
+        img_height = 16
+        data_augmentations = transforms.ToTensor()
+
+        data = ImageFolder('micro17flower', transform=data_augmentations)
+        targets = data.targets
+
+        # image size
+        input_shape = (3, img_width, img_height)
+
+        model = torchModel(cfg,
+                           input_shape=input_shape,
+                           num_classes=len(data.classes)).to(device)
+        total_model_params = np.sum(p.numel() for p in model.parameters())
+
+        if load:
+            paths = os.listdir("./models/trial_{}/".format(trial))
+            paths.sort(reverse=True)
+            load_path = os.path.join("./models/trial_{}/".format(trial), paths[0])
+            model.load_state_dict(torch.load(load_path))
+
+        # instantiate optimizer
+        model_optimizer, train_criterion = get_optimizer_and_crit(cfg)
+        optimizer = model_optimizer(model.parameters(),
+                                    lr=lr)
+        # instantiate training criterion
+        train_criterion = train_criterion().to(device)
+
+        logging.info('Generated Network:')
+        summary(model, input_shape,
+                device='cuda' if torch.cuda.is_available() else 'cpu')
+
+        # Number of epochs
+        # num_epochs = 20
+        batch_size = 16
+        # Train the model
+        score = []
+
+        # returns the cross validation accuracy
+        cv = StratifiedKFold(n_splits=3, random_state=self.seed, shuffle=True)  # to make CV splits consistent
+        for train_idx, valid_idx in cv.split(data, data.targets):
+            train_data = Subset(data, train_idx)
+            test_dataset = Subset(data, valid_idx)
+            train_loader = DataLoader(dataset=train_data,
+                                      batch_size=batch_size,
+                                      shuffle=True)
+            test_loader = DataLoader(dataset=test_dataset,
+                                     batch_size=batch_size,
+                                     shuffle=False)
+            for epoch in range(budget):
+                logging.info('#' * 50)
+                logging.info('Epoch [{}/{}]'.format(epoch + 1, budget))
+                # print(logging.info('Epoch [{}/{}]'.format(epoch + 1, budget)))
+                train_score, train_loss = model.train_fn(optimizer, train_criterion, train_loader, device)
+                test_score = model.eval_fn(test_loader, device)
+                logging.info('Train accuracy %f', train_score)
+                logging.info('Test accuracy %f', test_score)
+            score.append(test_score)
+            # reset model, optimizer and crit
+            model = torchModel(cfg,
+                               input_shape=input_shape,
+                               num_classes=len(data.classes)).to(device)
+            total_model_params = np.sum(p.numel() for p in model.parameters())
+            # instantiate optimizer
+            model_optimizer, train_criterion = get_optimizer_and_crit(cfg)
+            optimizer = model_optimizer(model.parameters(),
+                                        lr=lr)
+            # instantiate training criterion
+            train_criterion = train_criterion().to(device)
+
+        fitness = np.array([1 - np.mean(score), np.log10(total_model_params)])
+        if save:
+            if "trial_{}".format(trial) not in os.listdir("./models"):
+                os.mkdir("./models/trial_{}".format(trial))
+            save_path = "./models/trial_{}/weights_trial_{}_budget_{}.pt".format(trial, trial, budget)
+            torch.save(model.state_dict(), save_path)
+
+        return {f'f{i+1}': fitness[i] for i in range(len(fitness))}  # Because minimize!
+
+    def make_cs(self, cs):
+        # Build Configuration Space which defines all parameters and their ranges.
+        # To illustrate different parameter types,
+        # we use continuous, integer and categorical parameters.
+        # We can add multiple hyperparameters at once:
+        # batch_size = UniformIntegerHyperparameter("batch_size", 32, 256, default_value=64)
+        n_conf_layer = UniformIntegerHyperparameter("n_conv_layers", 1, 3, default_value=3)
+        n_conf_layer_0 = UniformIntegerHyperparameter("n_channels_conv_0", 16, 256, default_value=256)
+        n_conf_layer_1 = UniformIntegerHyperparameter("n_channels_conv_1", 16, 256, default_value=256)
+        n_conf_layer_2 = UniformIntegerHyperparameter("n_channels_conv_2", 16, 256, default_value=256)
+        # data_dir = Constant('data_dir', os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'micro17flower'))
+        # num_epochs = Constant('num_epochs', 20)
+        learning_rate_init = UniformFloatHyperparameter('learning_rate_init',
+                                                        0.00001, 1.0, default_value=2.244958736283895e-05, log=True)
+        cs.add_hyperparameters([n_conf_layer, n_conf_layer_0, n_conf_layer_1, n_conf_layer_2,
+                                learning_rate_init])
+
+        # Add conditions to restrict the hyperparameter space
+        use_conf_layer_2 = CS.conditions.InCondition(n_conf_layer_2, n_conf_layer, [3])
+        use_conf_layer_1 = CS.conditions.InCondition(n_conf_layer_1, n_conf_layer, [2, 3])
+        # Add  multiple conditions on hyperparameters at once:
+        cs.add_conditions([use_conf_layer_2, use_conf_layer_1])
+        return cs
+
+    def num_objectives(self):
+        return 2
 
 
 class WFG:
@@ -357,7 +526,9 @@ class TPESampler:
 
     def sample(self):
         hp_values, ys = self._load_hp_values()
+        print(hp_values, ys)
         n_lower = self.gamma_func(len(hp_values))
+        print("n lower", n_lower)
         lower_vals, upper_vals = self._split_observations(hp_values, ys, n_lower)
         var_type = self._distribution_type()
 
@@ -376,12 +547,14 @@ class TPESampler:
             rank = nondominated_sort(ys)
             indices = np.array(range(len(ys)))
             lower_indices = np.array([], dtype=int)
-
+            # print("rank", rank)
+            # print("indices", indices)
             # nondominance rank-based selection
             i = 0
             while len(lower_indices) + sum(rank == i) <= n_lower:
                 lower_indices = np.append(lower_indices, indices[rank == i])
                 i += 1
+                # print(len(lower_indices) + sum(rank == i))
 
             # hypervolume contribution-based selection
             ys_r = ys[rank == i]
@@ -389,10 +562,10 @@ class TPESampler:
             worst_point = np.max(ys, axis=0)
             reference_point = np.maximum(
                 np.maximum(
-                    1.1 * worst_point, # case: value > 0
-                    0.9 * worst_point # case: value < 0
+                    1.1 * worst_point,  # case: value > 0
+                    0.9 * worst_point  # case: value < 0
                 ),
-                np.full(len(worst_point), eps) # case: value = 0
+                np.full(len(worst_point), eps)  # case: value = 0
             )
 
             S = []
@@ -468,7 +641,7 @@ class TPESampler:
         hp_values = np.array([h['x'][self.hp.name]
                               for h in self._observations if self.hp.name in h['x']])
         hp_values = np.array([self._convert_hp(hp_value) for hp_value in hp_values])
-        ys = np.array([np.array(list(h['f'].values())) \
+        ys = np.array([np.array(list(h['f'].values()))
                        for h in self._observations if self.hp.name in h['x']])
         # order the newest sample first
         hp_values = np.flip(hp_values)
@@ -522,12 +695,15 @@ class MOTPE:
     def solve(self, problem, parameters):
         cs = problem.configspace
         hyperparameters = cs.get_hyperparameters()
+        print(hyperparameters)
+
         n_variables = problem.n_variables
         seed = self.seed
         init_method = parameters['init_method']
         n_init_samples = parameters['num_initial_samples']
-
+        problem.memory.clear()
         i = 0
+        # Generating initial configurartions
         if init_method == 'lhs':
             xs = pyDOE2.lhs(n_variables, samples=n_init_samples, criterion='maximin',
                             random_state=self.random_state)
@@ -536,35 +712,76 @@ class MOTPE:
                 x = cs.sample_configuration().get_dictionary()
             elif init_method == 'lhs':
                 # note: do not use lhs for non-real-valued parameters
-                x = {d[0].name: (d[0].upper - d[0].lower) * d[1] + d[0].lower \
+                x = {d[0].name: (d[0].upper - d[0].lower) * d[1] + d[0].lower
                      for d in zip(hyperparameters, xs[i])}
             else:
                 raise Exception('unknown init_method')
-            r = problem(x)
-            record = {'Trial': i, 'x': x, 'f': r}
+            r = problem(x, budget=20, save=True, trial=str(i))
+            record = {'Trial': i, 'x': x, 'f': r, 'budget': 20}
             self._history.append(record)
             print(record)
             i += 1
 
         # todo: implement sampling conditional parameters
+        # TODO: successive halving:
+        # FIXME!
+        # idea: save and reload models but the problem is that new TPE will be updated based on the lower budget
+        # Save after this loop
         while len(self._history) < parameters['num_max_evals']:
             split_cache = {}
             x = {}
+            skip1 = False
+            skip2 = False
             for hp in cs.get_hyperparameters():
-                sampler = TPESampler(hp,
-                                     self._history,
-                                     self.random_state,
-                                     n_ei_candidates=parameters['num_candidates'],
-                                     gamma_func=GammaFunction(parameters['gamma']),
-                                     weights_func=default_weights,
-                                     split_cache=split_cache)
-                x[hp.name] = sampler.sample()
-                split_cache = sampler.split_cache
-            r = problem(x)
-            record = {'Trial': i, 'x': x, 'f': r}
+                if hp.name == "n_conv_layers":
+                    sampler = TPESampler(hp,
+                                         self._history,
+                                         self.random_state,
+                                         n_ei_candidates=parameters['num_candidates'],
+                                         gamma_func=GammaFunction(parameters['gamma']),
+                                         weights_func=default_weights,
+                                         split_cache=split_cache)
+                    x[hp.name] = sampler.sample()
+                    split_cache = sampler.split_cache
+                    break
+            if x["n_conv_layers"] == 1:
+                skip1 = True
+                skip2 = True
+            elif x["n_conv_layers"] == 2:
+                skip2 = True
+
+            for hp in cs.get_hyperparameters():
+                if hp.name == "n_conv_layers":
+                    continue
+                if hp.name == "n_channels_conv_1" and skip1:
+                    continue
+                elif hp.name == "n_channels_conv_2" and skip2:
+                    continue
+                else:
+                    # For each HP sample new value by fitting TPE
+                    sampler = TPESampler(hp,
+                                         self._history,
+                                         self.random_state,
+                                         n_ei_candidates=parameters['num_candidates'],
+                                         gamma_func=GammaFunction(parameters['gamma']),
+                                         weights_func=default_weights,
+                                         split_cache=split_cache)
+                    x[hp.name] = sampler.sample()
+                    split_cache = sampler.split_cache
+            r = problem(x, budget=20, save=True, trial=str(i))
+            record = {'Trial': i, 'x': x, 'f': r, 'budget': 20}
             self._history.append(record)
-            print(record)
+            problem.memory.append(record)
             i += 1
+        # Reload and continue train here for the top accuracies for 30 epochs
+        top_ratio = int(np.floor(len(problem.memory)*(20/30)))
+        problem.memory.sort(key=lambda x: x['f']['f1'], reverse=True)  # Sort according to acc
+        for record in problem.memory[:top_ratio]:
+            # import pdb
+            # pdb.set_trace()
+            r = problem(record['x'], budget=30, save=True, load=True, trial=str(record['Trial']))
+            new_record = {'Trial': record['Trial'], 'x': record['x'], 'f': r, 'budget': 50}
+            self._history.append(new_record)
         return self.history()
 
     def history(self):

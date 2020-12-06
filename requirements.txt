@@ -1,0 +1,14 @@
+ConfigSpace
+matplotlib
+numpy
+optproblems
+pandas
+pyDOE2
+pygmo
+scipy
+diversipy
+torch 
+torchvision
+torch-summary
+sklearn
+tqdm

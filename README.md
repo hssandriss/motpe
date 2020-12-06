@@ -1,39 +1,22 @@
-# Multiobjective Tree-structured Parzen Estimator (MOTPE)
-
-## NOTE
-**This repository is no longer maintained.  
-MOTPE is available on [Optuna](https://optuna.org/).  
-Please use the Optuna's MOTPE implementation.**
+# Using MO-TPE for neural architecture search
 
 ## Dependencies
 
-Please install the following Python packages.
-
-- [ConfigSpace](https://automl.github.io/ConfigSpace/)
-- [matplotlib](https://matplotlib.org/)
-- [numpy](https://numpy.org/)
-- [optproblems](https://ls11-www.cs.tu-dortmund.de/people/swessing/optproblems/doc/)
-- [pandas](https://pandas.pydata.org/)
-- [pyDOE2](https://github.com/clicumu/pyDOE2)
-- [pygmo](https://esa.github.io/pygmo/)
-- [scipy](https://www.scipy.org/)
-
-
-## Usage
-
-Run MOTPE with the default settings on WFG4.
-
+Please install the dependencies via:
 ```sh
-python main.py
+pip install -r requirements.txt
 ```
 
-Several commandline options are available.
+## Features:
+- One way of doing NAS as HPO but in a multiobjective optimization, maximizing test set accuracy and minimizing network size.
+- Using hierachichal search space
+- Using early stopping for worst configurations in similar way as successive halving (multifidelity).
 
-```sh
-python main.py --benchmark_name WFG4 --num_objectives 2 --num_variables 9 --k 1 --num_max_evals 250 --num_initial_samples 98 --init_method lhs --num_candidates 24 --gamma 0.10 --seed 128
-```
+## Original code base made available by paper authors:
 
-## Code Contributors
+
 [Yoshihiko Ozaki](https://github.com/y0z)
 
 [Shuhei Watanabe](https://github.com/nabenabe0928)
+
+[Multiobjective tree-structured parzen estimator for computationally expensive optimization problems](https://dl.acm.org/doi/abs/10.1145/3377930.3389817)
