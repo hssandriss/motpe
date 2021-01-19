@@ -9,7 +9,7 @@ pip install -r requirements.txt
 
 ## Features:
 - NAS as HPO but caring about two objectives, **maximizing** test set accuracy and **minimizing** network number of parameters.
-- Using hierachichal search space.
+- Using hierachichal search space for CNN.
 - Using early stopping for worst configurations in similar way as successive halving (multifidelity).
 
 ## Original code base made available by paper authors:
