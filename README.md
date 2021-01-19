@@ -8,7 +8,7 @@ pip install -r requirements.txt
 ```
 
 ## Features:
-- One way of doing NAS as HPO but in a multiobjective optimization, maximizing test set accuracy and minimizing network size.
+- NAS as HPO but caring about two objectives, **maximizing** test set accuracy and **minimizing** network number of parameters.
 - Using hierachichal search space.
 - Using early stopping for worst configurations in similar way as successive halving (multifidelity).
 
